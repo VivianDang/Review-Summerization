@@ -3,6 +3,7 @@ import json
 import pandas as pd
 import gzip
 import os
+import re
 
 def parse(path):
   g = gzip.open(path, 'rb')
@@ -22,10 +23,12 @@ def getDF(path):
 #
 PATH = 'data/'
 os.chdir(PATH)
-files = os.listdir(PATH)
+files = os.listdir()
+for i in range(len(files)):
+  filename = files[i]
+  # # data1 = parse(files[0])
 
-# # data1 = parse(files[0])
-
-# with gzip.open(files[0], 'r') as fin:
-#   data = json.loads(fin.read().decode('utf-8'))
-
+  # with gzip.open(files[0], 'r') as fin:
+  #   data = json.loads(fin.read().decode('utf-8'))
+  df1 = getDF(filename)
+  df1.to_csv(re.search(r'[A-Za-z_0-9]*\.', filename).group()+'csv')
