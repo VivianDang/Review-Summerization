@@ -6,15 +6,19 @@ from unidecode import unidecode
 import contractions
 import nltk
 from emot.emo_unicode import EMOTICONS_EMO
+# define emoticons not provided in package
 EMOTICONS_EMO[';-)'] = 'Wink'
 EMOTICONS_EMO[': )'] = 'smile face'
 EMOTICONS_EMO['\m/'] = 'happy'
 
 PATH = 'data-csv/'
+
+# ----------read data
 df_raw = pd.read_csv(PATH+'randomdata.csv', header=0, index_col=[0])
 key_col = ['overall', 'reviewText', 'summary', 'type']
 df = df_raw[key_col]
 
+# ----------check null value
 print('missing values exists:\n', df.isnull().sum())
 # remove null
 df = df.dropna()
@@ -53,13 +57,31 @@ def clean_text(x, punc=True):
         x = re.sub(r'[^a-zA-z0-9$\s]', "", x)
     return x
 
+# keep punctuation
 df['text'] = df['reviewText'].astype(str).apply(clean_text, punc=False)
 # df['words'] = df['reviewText'].astype(str).apply(clean_text, punc=True)
 
+# ----------text length visual
+raw_txt_len = df.text.apply(lambda x: len(x.split()))
+sum_len = df.summary.apply(lambda x: len(x.split()))
+plt.figure()
+plt.hist(raw_txt_len, bins=100)
+plt.show()
+
+plt.hist(sum_len,bins=10)
+plt.show()
+
 # ----------remove too long text
 def rm_long(x, max_len=1000):
-    if len(x.split()) > max_len:
-        return ""
+    """
+    truncate data longer than max_len
+    :param x: str input text
+    :param max_len: int
+    :return:
+    """
+    words = x.split()
+    if len(words) > max_len:
+        return words[:max_len]
     else:
         return x
 
@@ -83,15 +105,8 @@ df = df[df.text!=""].reset_index()
 #     return result
 
 # df['words'] = df['words'].apply(remove_stop_words)
+
+# ----------overview
 print(f'shape of cleaned data:{df.shape}')
 df.to_csv(PATH+'clean_data.csv')
 
-raw_txt_len = df.text.apply(lambda x: len(x.split()))
-sum_len = df.summary.apply(lambda x: len(x.split()))
-plt.figure()
-plt.hist(raw_txt_len, bins=100)
-
-plt.show()
-
-plt.hist(sum_len,bins=10)
-plt.show()
