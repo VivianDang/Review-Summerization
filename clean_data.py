@@ -1,5 +1,7 @@
 import os
 import re
+
+import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from unidecode import unidecode
@@ -64,11 +66,23 @@ df['text'] = df['reviewText'].astype(str).apply(clean_text, punc=False)
 # ----------text length visual
 raw_txt_len = df.text.apply(lambda x: len(x.split()))
 sum_len = df.summary.apply(lambda x: len(x.split()))
+
 plt.figure()
 plt.hist(raw_txt_len, bins=100)
+plt.title('Review Token Length')
+plt.xticks(np.arange(0, 900, 100))
+plt.xlabel('length')
+plt.ylabel('count')
+plt.grid(axis='x')
 plt.show()
 
-plt.hist(sum_len,bins=10)
+plt.figure()
+plt.hist(sum_len, bins=20)
+plt.title('Summary Token Length')
+plt.xticks(np.arange(0, 100, 10))
+plt.xlabel('length')
+plt.ylabel('count')
+plt.grid(axis='x')
 plt.show()
 
 # ----------remove too long text
@@ -108,5 +122,17 @@ df = df[df.text!=""].reset_index()
 
 # ----------overview
 print(f'shape of cleaned data:{df.shape}')
-df.to_csv(PATH+'clean_data.csv')
+
+# ----------train test split
+SEED=666
+TEST_RATIO = 0.2
+N = 40000
+OUTPUT_PATH = 'clean_data/'
+df_sub = df.sample(N, random_state=SEED)
+train_set = df_sub.iloc[:int(len(df_sub) * (1 - TEST_RATIO))][['text', 'summary']]
+test_set = df_sub.iloc[-int(len(df_sub) * TEST_RATIO):][['text', 'summary']]
+print(f'shape of train data:{train_set.shape}')
+print(f'shape of test data:{test_set.shape}')
+train_set.to_csv(OUTPUT_PATH+'train.csv')
+test_set.to_csv(OUTPUT_PATH+'test.csv')
 
