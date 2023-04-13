@@ -1,4 +1,6 @@
 import random
+import time
+
 import torch
 from torch.utils.data import DataLoader, Dataset
 import numpy as np
@@ -15,8 +17,8 @@ PATH = 'data-csv/clean_data.csv'
 TEST_RATIO = 0.2
 BATCH_SIZE = 64
 BUFFER_SIZE = 15000
-encoder_max_length=160
-decoder_max_length=11
+encoder_max_length=512
+decoder_max_length=64
 num_layers = 4
 d_model = 128
 dff = 512
@@ -57,16 +59,19 @@ def get_vocab(x, ct):
 
 
 
-df = pd.read_csv(PATH, header=0, index_col=[0]).iloc[:10000][['text', 'summary']]
-df['text'] = df['text'].astype(str).apply(rm_long, max_len=300)
+df = pd.read_csv(PATH, header=0, index_col=[0]).sample(20000, random_state=SEED)
+
 train_val = df.iloc[:int(len(df) * (1 - TEST_RATIO))][['text', 'summary']]
+train_val.summary = train_val.summary.apply(lambda x: '<go> ' + x + ' <stop>')
 train_set = train_val.iloc[[i for i in range(len(train_val)) if i % 10 != 0]]
 val_set = train_val.iloc[[i for i in range(len(train_val)) if i % 10 == 0]]
 
 
 # =============================================
 document = train_set.text
-summary = train_set.summary.apply(lambda x: '<go> ' + x + ' <stop>')
+summary = train_set.summary
+document_val = val_set.text
+summary_val = val_set.summary
 txt_ct = Counter()
 train_set.text.apply(get_vocab, ct=txt_ct)
 sum_ct = Counter()
@@ -83,11 +88,15 @@ document_tokenizer.fit_on_texts(document)
 summary_tokenizer.fit_on_texts(summary)
 
 inputs = document_tokenizer.texts_to_sequences(document)
+inputs_val = document_tokenizer.texts_to_sequences(document_val)
 targets = summary_tokenizer.texts_to_sequences(summary)
+targets_val = summary_tokenizer.texts_to_sequences(summary_val)
 # =============================================
 
 inputs = keras.preprocessing.sequence.pad_sequences(inputs, maxlen=encoder_max_length, padding='post', truncating='post')
+inputs_val = keras.preprocessing.sequence.pad_sequences(inputs_val, maxlen=encoder_max_length, padding='post', truncating='post')
 targets = keras.preprocessing.sequence.pad_sequences(targets, maxlen=decoder_max_length, padding='post', truncating='post')
+targets_val = keras.preprocessing.sequence.pad_sequences(targets_val, maxlen=decoder_max_length, padding='post', truncating='post')
 
 # =============================================
 dataset = data.Dataset.from_tensor_slices((inputs, targets)).shuffle(BUFFER_SIZE).batch(BATCH_SIZE)
@@ -314,12 +323,14 @@ class Transformer(tf.keras.Model):
 
         self.final_layer = tf.keras.layers.Dense(target_vocab_size)
 
-    # def call(self, inp, tar, training, enc_padding_mask, look_ahead_mask, dec_padding_mask):
-    def call(self, inp, training, **kwargs):
-        tar = kwargs['tar']  # Note will raise an exception if the argument is missing
-        enc_padding_mask = kwargs['enc_padding_mask']
-        look_ahead_mask = kwargs['look_ahead_mask']
-        dec_padding_mask = kwargs['dec_padding_mask']
+    def call(self, inp, tar, training, enc_padding_mask, look_ahead_mask, dec_padding_mask):
+    # def call(self, data, training, **kwargs):
+        # tar = kwargs['tar']  # Note will raise an exception if the argument is missing
+        # enc_padding_mask = kwargs['enc_padding_mask']
+        # look_ahead_mask = kwargs['look_ahead_mask']
+        # dec_padding_mask = kwargs['dec_padding_mask']
+        # inp = np.concatenate([x for x, y in data], axis=0)
+        # tar = np.concatenate([y for x, y in data], axis=0)
         enc_output = self.encoder(inp, training, enc_padding_mask)
 
         dec_output, attention_weights = self.decoder(tar, enc_output, training, look_ahead_mask, dec_padding_mask)
@@ -327,17 +338,7 @@ class Transformer(tf.keras.Model):
         final_output = self.final_layer(dec_output)
 
         return final_output, attention_weights
-# =============================================
-transformer = Transformer(
-    num_layers,
-    d_model,
-    num_heads,
-    dff,
-    encoder_vocab_size,
-    decoder_vocab_size,
-    pe_input=encoder_vocab_size,
-    pe_target=decoder_vocab_size,
-)
+
 # =============================================
 class CustomSchedule(tf.keras.optimizers.schedules.LearningRateSchedule):
     def __init__(self, d_model, warmup_steps=4000):
@@ -355,8 +356,8 @@ class CustomSchedule(tf.keras.optimizers.schedules.LearningRateSchedule):
 
         return tf.math.rsqrt(self.d_model) * tf.math.minimum(arg1, arg2)
 # =============================================
-# learning_rate = CustomSchedule(d_model)
-optimizer = tf.keras.optimizers.Adam(learning_rate=CustomSchedule(d_model), beta_1=0.9, beta_2=0.98,
+learning_rate = CustomSchedule(d_model)
+optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate, beta_1=0.9, beta_2=0.98,
                                      epsilon=1e-9)
 # =============================================
 def masked_loss(label, pred):
@@ -385,14 +386,118 @@ def masked_accuracy(label, pred):
   mask = tf.cast(mask, dtype=tf.float32)
   return tf.reduce_sum(match)/tf.reduce_sum(mask)
 
+# =============================================
+transformer = Transformer(
+    num_layers,
+    d_model,
+    num_heads,
+    dff,
+    encoder_vocab_size,
+    decoder_vocab_size,
+    pe_input=encoder_vocab_size,
+    pe_target=decoder_vocab_size,
+)
+
+# =============================================
+def create_masks(inp, tar):
+  # Encoder padding mask
+  enc_padding_mask = create_padding_mask(inp)
+
+  # Used in the 2nd attention block in the decoder.
+  # This padding mask is used to mask the encoder outputs.
+  dec_padding_mask = create_padding_mask(inp)
+
+  # Used in the 1st attention block in the decoder.
+  # It is used to pad and mask future tokens in the input received by
+  # the decoder.
+  look_ahead_mask = create_look_ahead_mask(tf.shape(tar)[1])
+  dec_target_padding_mask = create_padding_mask(tar)
+  combined_mask = tf.maximum(dec_target_padding_mask, look_ahead_mask)
+
+  return enc_padding_mask, combined_mask, dec_padding_mask
+
+# =============================================
+train_loss = tf.keras.metrics.Mean(name='train_loss')
+train_accuracy = tf.keras.metrics.SparseCategoricalAccuracy(
+  name='train_accuracy')
+# =============================================
+# Create the checkpoint path and the checkpoint manager. This will be used to save checkpoints every `n` epochs.
+checkpoint_path = "./checkpoint/transformer"
+
+ckpt = tf.train.Checkpoint(transformer=transformer,
+                           optimizer=optimizer)
+
+ckpt_manager = tf.train.CheckpointManager(ckpt, checkpoint_path, max_to_keep=5)
+
+# if a checkpoint exists, restore the latest checkpoint.
+if ckpt_manager.latest_checkpoint:
+  ckpt.restore(ckpt_manager.latest_checkpoint)
+  print('Latest checkpoint restored!!')
 
 
+# =============================================
+# @tf.function
+# def train_step(inp, tar):
+#   tar_inp = tar[:, :-1]
+#   tar_real = tar[:, 1:]
+#
+#   enc_padding_mask, combined_mask, dec_padding_mask = create_masks(inp, tar_inp)
+#
+#   with tf.GradientTape() as tape:
+#     predictions, _ = transformer(inp,
+#                                  tar_inp,
+#                                  True,
+#                                  enc_padding_mask,
+#                                  combined_mask,
+#                                  dec_padding_mask)
+#     loss = masked_loss(tar_real, predictions)
+#
+#   gradients = tape.gradient(loss, transformer.trainable_variables)
+#   optimizer.apply_gradients(zip(gradients, transformer.trainable_variables))
+#
+#   train_loss(loss)
+#   train_accuracy(tar_real, predictions)
+
+
+
+# =============================================
+# for epoch in range(EPOCHS):
+#   start = time.time()
+#
+#   train_loss.reset_states()
+#   train_accuracy.reset_states()
+#
+#
+#   for (batch, (inp, tar)) in enumerate(dataset):
+#     train_step(inp, tar)
+#
+#     if batch % 500 == 0:
+#       print('Epoch {} Batch {} Loss {:.4f} Accuracy {:.4f}'.format(
+#         epoch + 1, batch, train_loss.result(), train_accuracy.result()))
+#
+#   if (epoch + 1) % 5 == 0:
+#     ckpt_save_path = ckpt_manager.save()
+#     print('Saving checkpoint for epoch {} at {}'.format(epoch + 1,
+#                                                         ckpt_save_path))
+#
+#   print('Epoch {} Loss {:.4f} Accuracy {:.4f}'.format(epoch + 1,
+#                                                       train_loss.result(),
+#                                                       train_accuracy.result()))
+#
+#   print('Time taken for 1 epoch: {} secs\n'.format(time.time() - start))
 # =============================================
 transformer.compile(
     loss=masked_loss,
     optimizer=optimizer,
     metrics=[masked_accuracy])
-# =============================================
-transformer.fit(train_set,
+
+# # =============================================
+# inp = np.concatenate([x for x, y in dataset], axis=0)
+# tar = np.concatenate([y for x, y in dataset], axis=0)
+tar_inp = targets[:, :-1]
+enc_padding_mask, combined_mask, dec_padding_mask = create_masks(inputs, tar_inp)
+transformer.fit(dataset,
                 epochs=EPOCHS,
-                validation_data=val_set)
+                validation_data=(inputs_val, targets_val))
+
+# transformer.save('./checkpoint/transformer')
