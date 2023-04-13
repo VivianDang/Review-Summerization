@@ -10,6 +10,8 @@ SEED=666
 TEST_RATIO = 0.2
 # BATCH_SIZE = 64
 BATCH_SIZE = 16
+encoder_max_length = 512
+decoder_max_length = 64
 ckpt = 'checkpoint-1490'
 # tokenizer = RobertaTokenizerFast.from_pretrained("roberta-base")
 tokenizer = BertTokenizerFast.from_pretrained("bert-base-cased")
@@ -38,11 +40,11 @@ def compute_metrics(pred):
 # map data correctly
 def generate_summary(batch):
     # Tokenizer will automatically set [BOS] <text> [EOS]
-    inputs = tokenizer(batch["text"], padding="max_length", truncation=True, max_length=40, return_tensors="pt")
+    inputs = tokenizer(batch["text"], padding="max_length", truncation=True, max_length=encoder_max_length, return_tensors="pt")
     input_ids = inputs.input_ids.to("cuda")
     attention_mask = inputs.attention_mask.to("cuda")
     with torch.no_grad():
-        outputs = model.generate(input_ids, attention_mask=attention_mask, length_penalty=0.8, num_beams=4)
+        outputs = model.generate(input_ids, attention_mask=attention_mask, length_penalty=0.8, num_beams=4, max_length=decoder_max_length)
     # all special tokens including will be removed
     output_str = tokenizer.batch_decode(outputs, skip_special_tokens=True)
 
@@ -69,5 +71,5 @@ print("ROUGE L SCORE: ",rougeL)
 
 # import pandas as pd
 # pd.DataFrame({'checkpoint': ckpt, 'ROUGE1':rouge1, 'ROUGE2':rouge2, 'ROUGEL':rougeL}).to_csv('output/ROUGE_score.csv')
-# output = pd.DataFrame({'reviewText': test_data['text'], 'predSumary':results['pred'], 'actualSummary':results['summary']})
+output = pd.DataFrame({'reviewText': test_data['text'], 'predSumary':results['pred'], 'actualSummary':results['summary']})
 # output.to_csv('output/summary_fullbert.csv')
