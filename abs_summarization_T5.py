@@ -14,6 +14,7 @@ PATH = 'clean_data/train.csv'
 ckpt = 't5-small'
 SEED = 666
 
+
 def set_seeds(seed):
     torch.manual_seed(seed)
     if torch.cuda.is_available():
@@ -23,6 +24,8 @@ def set_seeds(seed):
     random.seed(seed)
     torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.deterministic = True
+
+
 set_seeds(SEED)
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -36,18 +39,17 @@ def print_gpu_utilization():
     nvmlInit()
     handle = nvmlDeviceGetHandleByIndex(0)
     info = nvmlDeviceGetMemoryInfo(handle)
-    print(f"GPU memory occupied: {info.used//1024**2} MB.")
+    print(f"GPU memory occupied: {info.used // 1024 ** 2} MB.")
+
 
 print_gpu_utilization()
 
 train_set = pd.read_csv(PATH, header=0, index_col=[0])
 train_data = datasets.Dataset.from_pandas(train_set.iloc[[i for i in range(len(train_set)) if i % 5 != 0]],
-                                          preserve_index=False).select(range(10000))
+                                          preserve_index=False)
 val_data = datasets.Dataset.from_pandas(train_set.iloc[[i for i in range(len(train_set)) if i % 5 == 0]],
-                                          preserve_index=False).select(range(3000))
+                                        preserve_index=False)
 tokenizer = AutoTokenizer.from_pretrained(ckpt)
-
-
 
 encoder_max_length = 512
 decoder_max_length = 40
@@ -58,38 +60,41 @@ if ckpt in ["t5-small", "t5-base", "t5-larg", "t5-3b", "t5-11b"]:
 else:
     prefix = ""
 
-# def tokenize_function(entry):
-#     inputs = [prefix + doc for doc in entry['text']]
-#     model_inputs = tokenizer(inputs, truncation=True, max_length=encoder_max_length)
+
+def tokenize_function(entry):
+    inputs = [prefix + doc for doc in entry['text']]
+    model_inputs = tokenizer(inputs, truncation=True, max_length=encoder_max_length)
+    # print(inputs)
+    with tokenizer.as_target_tokenizer():
+        labels = tokenizer(entry["summary"], truncation=True, max_length=decoder_max_length)
+
+    model_inputs['labels'] = labels['input_ids'].copy()
+    model_inputs['labels'] = [[-100 if token == tokenizer.pad_token_id else token for token in labels]
+                          for labels in model_inputs['labels']]
+
+    return model_inputs
+
+# def tokenize_function(batch):
+#     # tokenize the inputs and labels
+#     # print(batch)
+#     inputs = tokenizer(batch["text"], truncation=True, max_length=encoder_max_length)
 #     # print(inputs)
-#     with tokenizer.as_target_tokenizer():
-#         labels = tokenizer(entry["summary"], truncation=True, max_length=decoder_max_length)
+#     outputs = tokenizer(batch["summary"], truncation=True, max_length=decoder_max_length)
+#     # print(outputs)
 #
-#     model_inputs['labels'] = labels['input_ids'].copy()
-#     model_inputs['labels'] = [[-100 if token == tokenizer.pad_token_id else token for token in labels]
-#                           for labels in model_inputs['labels']]
+#     batch["input_ids"] = inputs.input_ids
+#     batch["attention_mask"] = inputs.attention_mask
+#     # batch["decoder_input_ids"] = outputs.input_ids
+#     # batch["decoder_attention_mask"] = outputs.attention_mask
+#     batch["labels"] = outputs.input_ids.copy()
 #
-#     return model_inputs
+#     #   # because RoBERTa automatically shifts the labels, the labels correspond exactly to `decoder_input_ids`.
+#     #   # We have to make sure that the PAD token is ignored
+#     batch["labels"] = [[-100 if token == tokenizer.pad_token_id else token for token in labels] for labels in
+#                        batch["labels"]]
+#
+#     return batch
 
-def tokenize_function(batch):
-  # tokenize the inputs and labels
-  # print(batch)
-  inputs = tokenizer(batch["text"], truncation=True, max_length=encoder_max_length)
-  # print(inputs)
-  outputs = tokenizer(batch["summary"], truncation=True, max_length=decoder_max_length)
-  # print(outputs)
-
-  batch["input_ids"] = inputs.input_ids
-  batch["attention_mask"] = inputs.attention_mask
-  # batch["decoder_input_ids"] = outputs.input_ids
-  # batch["decoder_attention_mask"] = outputs.attention_mask
-  batch["labels"] = outputs.input_ids.copy()
-
-#   # because RoBERTa automatically shifts the labels, the labels correspond exactly to `decoder_input_ids`.
-#   # We have to make sure that the PAD token is ignored
-  batch["labels"] = [[-100 if token == tokenizer.pad_token_id else token for token in labels] for labels in batch["labels"]]
-
-  return batch
 
 train_data = train_data.map(
     tokenize_function,
@@ -97,6 +102,9 @@ train_data = train_data.map(
     batch_size=BATCH_SIZE,
     remove_columns=["text", "summary"]
 )
+# train_data.set_format(
+#     type="torch", columns=["input_ids", "attention_mask", "labels"],
+# )
 
 val_data = val_data.map(
     tokenize_function,
@@ -104,15 +112,17 @@ val_data = val_data.map(
     batch_size=BATCH_SIZE,
     remove_columns=["text", "summary"]
 )
-
+# val_data.set_format(
+#     type="torch", columns=["input_ids", "attention_mask", "labels"],
+# )
 
 model = AutoModelForSeq2SeqLM.from_pretrained(ckpt)
 print_gpu_utilization()
 
 # freeze self-attention layer of encoder
-freeze_layers = [model.encoder.block[i].layer[0] for i in range(len(model.encoder.block)-1)]
+freeze_layers = [model.encoder.block[i].layer[0] for i in range(len(model.encoder.block) - 1)]
 # freeze self-attention layer of decoder
-freeze_layers.extend([model.decoder.block[i].layer[0] for i in range(len(model.decoder.block)-1)])
+freeze_layers.extend([model.decoder.block[i].layer[0] for i in range(len(model.decoder.block) - 1)])
 # freeze cross-attention layer
 freeze_layers.extend([model.decoder.block[i].layer[1] for i in range(len(model.decoder.block)-1)])
 
@@ -132,13 +142,13 @@ training_args = Seq2SeqTrainingArguments(
     fp16=True,
     gradient_accumulation_steps=16,
     gradient_checkpointing=True,
-    output_dir="./checkpoint/bert_pre",
+    output_dir="./checkpoint/T5",
     # logging_steps=2,
     # logging_steps=10,
-    # do_train=True,
-    # do_eval=True,
+    do_train=True,
+    do_eval=True,
     # save_steps=10,
-    # eval_steps=500,
+    eval_steps=500,
     # logging_steps=1000,
     # save_steps=500,
     # warmup_steps=500,
@@ -146,8 +156,7 @@ training_args = Seq2SeqTrainingArguments(
     overwrite_output_dir=True,
 )
 
-
-seq2seq_collator = DataCollatorForSeq2Seq(tokenizer, model=model, return_tensors='tf')
+seq2seq_collator = DataCollatorForSeq2Seq(tokenizer, model=model)
 
 metric = datasets.load_metric("rouge")
 
@@ -184,3 +193,7 @@ trainer = Seq2SeqTrainer(
     eval_dataset=val_data,
 )
 trainer.train()
+# {'train_runtime': 4381.1889, 'train_samples_per_second': 17.529, 'train_steps_per_second': 0.068, 'train_loss': 4.020676676432291, 'epoch': 3.0}
+# {'eval_loss': 3.3393425941467285, 'eval_rouge1': 12.6772, 'eval_rouge2': 6.5119, 'eval_rougeL': 12.2064, 'eval_rougeLsum': 12.227, 'eval_gen_len': 11.8267, 'eval_runtime': 244.0334, 'eval_samples_per_second': 26.226, 'eval_steps_per_second': 1.639, 'epoch': 3.0}
+
+trainer.save_model('./models')
