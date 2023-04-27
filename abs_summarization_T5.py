@@ -51,7 +51,7 @@ val_data = datasets.Dataset.from_pandas(train_set.iloc[[i for i in range(len(tra
                                         preserve_index=False)
 tokenizer = AutoTokenizer.from_pretrained(ckpt)
 
-encoder_max_length = 512
+encoder_max_length = 1024
 decoder_max_length = 40
 BATCH_SIZE = 16
 
@@ -120,38 +120,66 @@ model = AutoModelForSeq2SeqLM.from_pretrained(ckpt)
 print_gpu_utilization()
 
 # freeze self-attention layer of encoder
-freeze_layers = [model.encoder.block[i].layer[0] for i in range(len(model.encoder.block) - 1)]
-# freeze self-attention layer of decoder
-freeze_layers.extend([model.decoder.block[i].layer[0] for i in range(len(model.decoder.block) - 1)])
-# freeze cross-attention layer
-freeze_layers.extend([model.decoder.block[i].layer[1] for i in range(len(model.decoder.block)-1)])
+# freeze_layers = [model.encoder.block[i].layer[0] for i in range(len(model.encoder.block) - 2)]
+# # freeze self-attention layer of decoder
+# freeze_layers.extend([model.decoder.block[i].layer[0] for i in range(len(model.decoder.block) - 2)])
+# # freeze cross-attention layer
+# freeze_layers.extend([model.decoder.block[i].layer[1] for i in range(len(model.decoder.block))])
 
+# freeze encoder
+# freeze_layers = [model.encoder]
+
+# freeze bottom layers of encoder
+freeze_layers = [model.encoder.block[i] for i in range(len(model.encoder.block) - 2)]
+freeze_layers.extend([model.encoder.block[i] for i in range(len(model.decoder.block) - 2)])
+# freeze_layers = [model.encoder.block[i] for i in range(len(model.encoder.block))]
+# freeze_layers.extend([model.encoder.block[i] for i in range(len(model.decoder.block))])
 for module in freeze_layers:
     for param in module.parameters():
         param.requires_grad = False
 
+# Freeze all layers except for the last layer
+# for param in model.parameters():  # exclude the last layer
+#     param.requires_grad = False
 
+# from transformers import AdamW
+# optimizer = AdamW(
+#     model.parameters(),
+#     lr=1e-3
+# )
+
+# check layers Print the requires_grad attribute of each parameter in the model
+# for name, param in model.named_parameters():
+#     print(name, param.requires_grad)
+model.config.use_cache = False
+# model.config.length_penalty=2
+# model.config.num_beams=3
+# model.config.no_repeat_ngram_size=1
+# model.config.early_stopping=True
+model.config.max_length=decoder_max_length
 
 training_args = Seq2SeqTrainingArguments(
     predict_with_generate=True,
     evaluation_strategy="epoch",
-    learning_rate=2e-5,
+    save_strategy='epoch',
+    learning_rate=5e-5,
+    lr_scheduler_type='linear',
     per_device_train_batch_size=BATCH_SIZE,
     per_device_eval_batch_size=BATCH_SIZE,
     weight_decay=0.01,
     fp16=True,
     gradient_accumulation_steps=16,
     gradient_checkpointing=True,
-    output_dir="./checkpoint/T5",
-    # logging_steps=2,
-    # logging_steps=10,
+    output_dir="./checkpoint/T5_longform",
+    num_train_epochs=10,
+    logging_strategy='epoch',
+    logging_steps=100,
+    logging_dir='./logs',
     do_train=True,
     do_eval=True,
-    # save_steps=10,
     eval_steps=500,
-    # logging_steps=1000,
-    # save_steps=500,
-    # warmup_steps=500,
+    save_steps=500,
+    warmup_steps=500,
     save_total_limit=3,
     overwrite_output_dir=True,
 )
@@ -187,6 +215,7 @@ trainer = Seq2SeqTrainer(
     model=model,
     tokenizer=tokenizer,
     args=training_args,
+    # optimizers=optimizer,
     data_collator=seq2seq_collator,
     compute_metrics=compute_metrics,
     train_dataset=train_data,
@@ -195,5 +224,16 @@ trainer = Seq2SeqTrainer(
 trainer.train()
 # {'train_runtime': 4381.1889, 'train_samples_per_second': 17.529, 'train_steps_per_second': 0.068, 'train_loss': 4.020676676432291, 'epoch': 3.0}
 # {'eval_loss': 3.3393425941467285, 'eval_rouge1': 12.6772, 'eval_rouge2': 6.5119, 'eval_rougeL': 12.2064, 'eval_rougeLsum': 12.227, 'eval_gen_len': 11.8267, 'eval_runtime': 244.0334, 'eval_samples_per_second': 26.226, 'eval_steps_per_second': 1.639, 'epoch': 3.0}
-
-trainer.save_model('./models')
+#
+# {'train_runtime': 4474.754, 'train_samples_per_second': 21.454, 'train_steps_per_second': 0.084, 'train_loss': 3.7059837900797525, 'epoch': 3.0}
+# {'eval_loss': 3.0026843547821045, 'eval_rouge1': 13.3352, 'eval_rouge2': 6.9143, 'eval_rougeL': 12.9298, 'eval_rougeLsum': 12.9477, 'eval_gen_len': 10.3405, 'eval_runtime': 266.4063, 'eval_samples_per_second': 30.029, 'eval_steps_per_second': 1.877, 'epoch': 3.0}
+#
+# {'train_runtime': 4509.7754, 'train_samples_per_second': 21.287, 'train_steps_per_second': 0.083, 'train_loss': 3.5159979553222658, 'epoch': 3.0}
+# {'eval_loss': 2.8896069526672363, 'eval_rouge1': 13.6914, 'eval_rouge2': 6.9468, 'eval_rougeL': 13.283, 'eval_rougeLsum': 13.3142, 'eval_gen_len': 9.7924, 'eval_runtime': 261.3744, 'eval_samples_per_second': 30.607, 'eval_steps_per_second': 1.913, 'epoch': 3.0}
+#
+# {'train_runtime': 15629.4598, 'train_samples_per_second': 20.474, 'train_steps_per_second': 0.08, 'train_loss': 3.0075174560546873, 'epoch': 10.0}
+# {'eval_loss': 2.5083444118499756, 'eval_rouge1': 30.9199, 'eval_rouge2': 22.9759, 'eval_rougeL': 30.6549, 'eval_rougeLsum': 30.6498, 'eval_gen_len': 7.4021, 'eval_runtime': 357.434, 'eval_samples_per_second': 22.382, 'eval_steps_per_second': 1.399, 'epoch': 10.0}
+#
+#{'train_runtime': 20681.2962, 'train_samples_per_second': 15.473, 'train_steps_per_second': 0.06, 'train_loss': 3.0075174560546873, 'epoch': 10.0}
+# {'eval_loss': 2.5083444118499756, 'eval_rouge1': 30.6878, 'eval_rouge2': 22.8856, 'eval_rougeL': 30.3796, 'eval_rougeLsum': 30.4104, 'eval_gen_len': 6.8791, 'eval_runtime': 745.5379, 'eval_samples_per_second': 10.731, 'eval_steps_per_second': 0.671, 'epoch': 10.0}
+trainer.save_model('./model/T5')
