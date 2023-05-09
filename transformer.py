@@ -1,50 +1,30 @@
-import random
-
 import datasets
 import nltk
 import numpy as np
 import pandas as pd
-# from accelerate import init_empty_weights
-# from transformers import AutoConfig, AutoModelForCausalLM
 import torch
+import sys
+sys.path.append('/home/ubuntu/Review-Summerization/helper_function.py')
+from helper_function import set_seeds, print_gpu_utilization
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, DataCollatorForSeq2Seq, Seq2SeqTrainingArguments, \
     Seq2SeqTrainer
 
 PATH = 'clean_data/train.csv'
+# PATH = 'clean_data/item_reviews.csv'
 ckpt = 't5-small'
+# ckpt = 'bert-base-cased'
 SEED = 666
-
-
-def set_seeds(seed):
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed(seed)
-        torch.cuda.manual_seed_all(seed)
-    np.random.seed(seed)
-    random.seed(seed)
-    torch.backends.cudnn.benchmark = False
-    torch.backends.cudnn.deterministic = True
-
+N = 40000
 
 set_seeds(SEED)
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 torch.cuda.empty_cache()
 print(f'DEVICE: {device}')
-
-from pynvml import *
-
-
-def print_gpu_utilization():
-    nvmlInit()
-    handle = nvmlDeviceGetHandleByIndex(0)
-    info = nvmlDeviceGetMemoryInfo(handle)
-    print(f"GPU memory occupied: {info.used // 1024 ** 2} MB.")
-
-
 print_gpu_utilization()
 
-train_set = pd.read_csv(PATH, header=0, index_col=[0])
+
+train_set = pd.read_csv(PATH, header=0, index_col=[0]).sample(N, random_state=SEED)
 train_data = datasets.Dataset.from_pandas(train_set.iloc[[i for i in range(len(train_set)) if i % 5 != 0]],
                                           preserve_index=False)
 val_data = datasets.Dataset.from_pandas(train_set.iloc[[i for i in range(len(train_set)) if i % 5 == 0]],
@@ -52,14 +32,15 @@ val_data = datasets.Dataset.from_pandas(train_set.iloc[[i for i in range(len(tra
 tokenizer = AutoTokenizer.from_pretrained(ckpt)
 
 encoder_max_length = 1024
-decoder_max_length = 40
+decoder_max_length = 80
+# encoder_max_length = 512
+# decoder_max_length = 64
 BATCH_SIZE = 16
 
 if ckpt in ["t5-small", "t5-base", "t5-larg", "t5-3b", "t5-11b"]:
     prefix = "summarize: "
 else:
     prefix = ""
-
 
 def tokenize_function(entry):
     inputs = [prefix + doc for doc in entry['text']]
@@ -73,27 +54,6 @@ def tokenize_function(entry):
                           for labels in model_inputs['labels']]
 
     return model_inputs
-
-# def tokenize_function(batch):
-#     # tokenize the inputs and labels
-#     # print(batch)
-#     inputs = tokenizer(batch["text"], truncation=True, max_length=encoder_max_length)
-#     # print(inputs)
-#     outputs = tokenizer(batch["summary"], truncation=True, max_length=decoder_max_length)
-#     # print(outputs)
-#
-#     batch["input_ids"] = inputs.input_ids
-#     batch["attention_mask"] = inputs.attention_mask
-#     # batch["decoder_input_ids"] = outputs.input_ids
-#     # batch["decoder_attention_mask"] = outputs.attention_mask
-#     batch["labels"] = outputs.input_ids.copy()
-#
-#     #   # because RoBERTa automatically shifts the labels, the labels correspond exactly to `decoder_input_ids`.
-#     #   # We have to make sure that the PAD token is ignored
-#     batch["labels"] = [[-100 if token == tokenizer.pad_token_id else token for token in labels] for labels in
-#                        batch["labels"]]
-#
-#     return batch
 
 
 train_data = train_data.map(
@@ -119,15 +79,6 @@ val_data = val_data.map(
 model = AutoModelForSeq2SeqLM.from_pretrained(ckpt)
 print_gpu_utilization()
 
-# freeze self-attention layer of encoder
-# freeze_layers = [model.encoder.block[i].layer[0] for i in range(len(model.encoder.block) - 2)]
-# # freeze self-attention layer of decoder
-# freeze_layers.extend([model.decoder.block[i].layer[0] for i in range(len(model.decoder.block) - 2)])
-# # freeze cross-attention layer
-# freeze_layers.extend([model.decoder.block[i].layer[1] for i in range(len(model.decoder.block))])
-
-# freeze encoder
-# freeze_layers = [model.encoder]
 
 # freeze bottom layers of encoder
 freeze_layers = [model.encoder.block[i] for i in range(len(model.encoder.block) - 2)]
@@ -138,15 +89,6 @@ for module in freeze_layers:
     for param in module.parameters():
         param.requires_grad = False
 
-# Freeze all layers except for the last layer
-# for param in model.parameters():  # exclude the last layer
-#     param.requires_grad = False
-
-# from transformers import AdamW
-# optimizer = AdamW(
-#     model.parameters(),
-#     lr=1e-3
-# )
 
 # check layers Print the requires_grad attribute of each parameter in the model
 # for name, param in model.named_parameters():
@@ -160,7 +102,7 @@ model.config.max_length=decoder_max_length
 
 training_args = Seq2SeqTrainingArguments(
     predict_with_generate=True,
-    evaluation_strategy="epoch",
+    evaluation_strategy="steps",
     save_strategy='epoch',
     learning_rate=5e-5,
     lr_scheduler_type='linear',
@@ -172,14 +114,17 @@ training_args = Seq2SeqTrainingArguments(
     gradient_checkpointing=True,
     output_dir="./checkpoint/T5_longform",
     num_train_epochs=10,
-    logging_strategy='epoch',
+    logging_strategy='steps',
     logging_steps=100,
     logging_dir='./logs',
     do_train=True,
     do_eval=True,
-    eval_steps=500,
-    save_steps=500,
-    warmup_steps=500,
+    # eval_steps=500,
+    # save_steps=500,
+    eval_steps=100,
+    save_steps=100,
+    warmup_steps=100,
+    # warmup_steps=500,
     save_total_limit=3,
     overwrite_output_dir=True,
 )
@@ -236,4 +181,4 @@ trainer.train()
 #
 #{'train_runtime': 20681.2962, 'train_samples_per_second': 15.473, 'train_steps_per_second': 0.06, 'train_loss': 3.0075174560546873, 'epoch': 10.0}
 # {'eval_loss': 2.5083444118499756, 'eval_rouge1': 30.6878, 'eval_rouge2': 22.8856, 'eval_rougeL': 30.3796, 'eval_rougeLsum': 30.4104, 'eval_gen_len': 6.8791, 'eval_runtime': 745.5379, 'eval_samples_per_second': 10.731, 'eval_steps_per_second': 0.671, 'epoch': 10.0}
-trainer.save_model('./model/T5')
+trainer.save_model('./checkpoint/T5')
